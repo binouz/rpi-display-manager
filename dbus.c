@@ -30,23 +30,15 @@ static const gchar introspection_xml[] =
 
 static void on_start(disp_ctx_t *ctx, GDBusMethodInvocation *invocation, GVariant *params)
 {
-  int success;
+  int success = 0;
   GVariant *res = NULL;
   char *mode_str;
-  HDMI_MODE_T mode;
+  int mode = 0;
 
   g_variant_get(params, "(&s)", &mode_str);
+  mode = display_output_mode_from_str(mode_str);
 
-  if (g_strcmp0(mode_str, "HDMI") == 0)
-    mode = HDMI_MODE_HDMI;
-  else if (g_strcmp0(mode_str, "DVI") == 0)
-    mode = HDMI_MODE_DVI;
-  else if (g_strcmp0(mode_str, "3D") == 0)
-    mode = HDMI_MODE_3D;
-  else
-    mode = HDMI_MODE_OFF;
-
-  if ((ctx->state & STATE_HDMI_RUNNING) || display_hdmi_start(ctx, mode) == 0)
+  if ((mode >= 0) && ((ctx->state & STATE_OUTPUT_RUNNING) || display_output_start(ctx, mode) == 0))
     success = 1;
 
   res = g_variant_new("(b)", (success == 1) ? TRUE : FALSE);
@@ -55,8 +47,8 @@ static void on_start(disp_ctx_t *ctx, GDBusMethodInvocation *invocation, GVarian
 
 static void on_stop(disp_ctx_t *ctx, GDBusMethodInvocation *invocation)
 {
-  if (ctx->state & STATE_HDMI_RUNNING)
-    display_hdmi_stop(ctx);
+  if (ctx->state & STATE_OUTPUT_RUNNING)
+    display_output_stop(ctx);
 
   g_dbus_method_invocation_return_value(invocation, NULL);
 }
@@ -67,28 +59,26 @@ static void on_get_infos(disp_ctx_t *ctx, GDBusMethodInvocation *invocation)
   int i;
   GVariantBuilder builder;
   GVariantBuilder fmt_builder;
-  hdmi_infos_t infos;
+  disp_infos_t infos;
 
   g_variant_builder_init(&builder, G_VARIANT_TYPE("a{sv}"));
 
-  if (display_hdmi_get_infos(ctx, &infos) == 0)
+  if (display_output_get_infos(ctx, &infos) == 0)
   {
     g_variant_builder_add(&builder, "{sv}", "vendor",
-                          g_variant_new("s", infos.device_id.vendor));
+                          g_variant_new("s", infos.vendor));
     g_variant_builder_add(&builder, "{sv}", "name",
-                          g_variant_new("s", infos.device_id.monitor_name));
+                          g_variant_new("s", infos.name));
     g_variant_builder_add(&builder, "{sv}", "serial",
-                          g_variant_new("u", infos.device_id.monitor_name));
+                          g_variant_new("u", infos.serial));
 
-    g_variant_builder_init(&fmt_builder, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_init(&fmt_builder, G_VARIANT_TYPE("as"));
     for (i = 0; i < infos.count; i++)
-    {
-      g_variant_builder_add(&fmt_builder, "{sv}", "fps", infos.supported[i].frame_rate);
-      g_variant_builder_add(&fmt_builder, "{sv}", "width", infos.supported[i].width);
-      g_variant_builder_add(&fmt_builder, "{sv}", "height", infos.supported[i].height);
-    }
-    g_variant_builder_add(&builder, "{sv}", "supported",
+      g_variant_builder_add(&fmt_builder, "s", infos.formats[i]);
+    g_variant_builder_add(&builder, "{sv}", "formats",
                           g_variant_new("as", &fmt_builder));
+
+    display_output_clean_infos(&infos);
   }
 
   res = g_variant_new("(a{sv})", &builder);
@@ -99,11 +89,11 @@ static void on_get_state(disp_ctx_t *ctx, GDBusMethodInvocation *invocation)
 {
   GVariant *res = NULL;
   GVariantBuilder builder;
-  state_t state;
+  disp_state_t state;
 
   g_variant_builder_init(&builder, G_VARIANT_TYPE("a{sv}"));
 
-  if (display_hdmi_get_state(ctx, &state) != 0)
+  if (display_output_get_state(ctx, &state) == 0)
   {
     g_variant_builder_add(&builder, "{sv}", "active",
                           g_variant_new("b", state.active ? TRUE : FALSE));
@@ -128,7 +118,7 @@ static void on_set_format(disp_ctx_t *ctx, GDBusMethodInvocation *invocation, GV
   char *format;
 
   g_variant_get(params, "(&s)", &format);
-  success = display_hdmi_set_format(ctx, format);
+  success = display_output_set_format(ctx, format);
   res = g_variant_new("(b)", success == 0 ? TRUE : FALSE);
   g_dbus_method_invocation_return_value(invocation, res);
 }
@@ -171,7 +161,6 @@ static const GDBusInterfaceVTable interface_vtable =
 
 static void on_bus_acquired(GDBusConnection *connection, const gchar *name, gpointer user_data)
 {
-  printf("bus acquired !\n");
 }
 
 static void on_name_acquired(GDBusConnection *connection,
@@ -198,7 +187,6 @@ static void on_name_acquired(GDBusConnection *connection,
     g_error_free (error);
     display_stop(ctx);
   }
-  printf("Name acquired !\n");
 }
 
 static void on_name_lost(GDBusConnection *connection,
@@ -267,6 +255,7 @@ void display_dbus_stop(disp_ctx_t *ctx)
 
 void display_dbus_event(disp_ctx_t *ctx, char *name)
 {
+
   if (ctx->dbus.connection)
     g_dbus_connection_emit_signal(
       ctx->dbus.connection,
